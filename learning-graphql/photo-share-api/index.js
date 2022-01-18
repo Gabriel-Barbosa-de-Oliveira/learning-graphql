@@ -9,6 +9,7 @@ const typeDefs = `
         name: String
         avatar: String
         postedPhotos: [Photo!]!
+        inPhotos: [Photo!]!
     }
 
     enum PhotoCategory {
@@ -26,6 +27,7 @@ const typeDefs = `
         description: String
         category: PhotoCategory!
         postedBy: User!
+        taggedUsers: [User!]!
     }
 
     input PostPhotoInput {
@@ -47,6 +49,12 @@ const typeDefs = `
 `
 
 var _id = 0
+var tags = [
+    { "photoID": "1", "userID": "gPlake" },
+    { "photoID": "2", "userID": "sSchmidt" },
+    { "photoID": "2", "userID": "mHattrup" },
+    { "photoID": "2", "userID": "gPlake" }
+]
 var photos = [
     {
         "id": "1",
@@ -96,24 +104,42 @@ const resolvers = {
         url: parent => `http://yoursite.com/img/${parent.id}.jpg`,
         postedBy: parent => {
             return users.find(u => u.githubLogin === parent.githubUser)
-        }
+        },
+        taggedUsers: parent => tags
+            // Returns an array of tags that only contain the current photo
+            .filter(tag => tag.photoID === parent.id)
+
+            // Converts the array of tags into an array of userIDs
+            .map(tag => tag.userID)
+
+            // Converts array of userIDs into an array of user objects
+            .map(userID => users.find(u => u.githubLogin === userID))
     },
     User: {
         postedPhotos: parent => {
             return photos.filter(p => p.githubUser === parent.githubLogin)
-        }
+        },
+        inPhotos: parent => tags
+            // Returns an array of tags that only contain the current user
+            .filter(tag => tag.userID === parent.id)
+
+            // Converts the array of tags into an array of photoIDs
+            .map(tag => tag.photoID)
+
+            // Converts array of photoIDs into an array of photo objects
+            .map(photoID => photos.find(p => p.id === photoID))
     }
 }
 
 // 2. Create a new instance of the server.
 // 3. Send it an object with typeDefs (the schema) and resolvers
 const server = new ApolloServer({
-        typeDefs,
-        resolvers
-    })
+    typeDefs,
+    resolvers
+})
 
 
 // 4. Call listen on the server to launch the web server
 server
     .listen()
-        .then(({ url }) => console.log(`GraphQL Service running on ${url}`))
+    .then(({ url }) => console.log(`GraphQL Service running on ${url}`))
