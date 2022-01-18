@@ -41,6 +41,9 @@ const resolvers = {
             // 3. Return the new photo
             return newPhoto
         }
+    },
+    Photo: {
+        url: parent => `http://yoursite.com/img/${parent.id}.jpg`
     }
 }
 
