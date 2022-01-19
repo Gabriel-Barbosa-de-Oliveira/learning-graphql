@@ -45,9 +45,20 @@ const typeDefs = `
         allPhotos(after: DateTime): [Photo!]!
     }
 
+    type Subscription {
+        newPhoto(category: PhotoCategory): Photo!
+        newUser: User!
+    }
+
     # 3. Return the newly posted photo from the mutation
     type Mutation {
         postPhoto(input: PostPhotoInput!): Photo!
+    }
+
+    schema {
+        query: Query
+        mutation: Mutation
+        subscription: Subscription
     }
 `
 
