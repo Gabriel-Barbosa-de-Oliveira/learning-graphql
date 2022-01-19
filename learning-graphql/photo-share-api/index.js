@@ -2,6 +2,7 @@
 const { ApolloServer } = require('apollo-server-express')
 const { MongoClient } = require('mongodb')
 require('dotenv').config()
+const fetch = require("node-fetch");
 const express = require('express')
 const expressPlayground = require('graphql-playground-middleware-express').default
 
@@ -46,13 +47,24 @@ const typeDefs = `
 
     # 2. Return Photo from allPhotos
     type Query {
+        me: User
         totalPhotos: Int!
         allPhotos(after: DateTime): [Photo!]!
+        totalUsers: Int!
+        allUsers: [User!]!      
+    }
+
+    type AuthPayload {
+        token: String!
+        user: User!
     }
 
     # 3. Return the newly posted photo from the mutation
     type Mutation {
         postPhoto(input: PostPhotoInput!): Photo!
+        githubAuth(code: String!): AuthPayload!
+        addFakeUsers(count: Int = 1): [User!]!
+        fakeUserAuth(githubLogin: ID!): AuthPayload!
     }
 `
 
@@ -98,27 +110,119 @@ const serialize = value => new Date(value).toISOString()
 
 const resolvers = {
     Query: {
-        totalPhotos: () => photos.length,
-        allPhotos: () => photos
+        me: (parent, args, { currentUser }) => currentUser,
+        totalPhotos: (parent, args, { db }) =>
+            db.collection('photos')
+                .estimatedDocumentCount(),
+
+        allPhotos: (parent, args, { db }) =>
+            db.collection('photos')
+                .find()
+                .toArray(),
+
+        totalUsers: (parent, args, { db }) =>
+            db.collection('users')
+                .estimatedDocumentCount(),
+
+        allUsers: (parent, args, { db }) =>
+            db.collection('users')
+                .find()
+                .toArray()
     },
     Mutation: {
-        postPhoto(parent, args) {
-            // 2. Create a new photo, and generate an id
-            var newPhoto = {
-                id: _id++,
+        async postPhoto(parent, args, { db, currentUser }) {
+
+            // 1. If there is not a user in context, throw an error
+            if (!currentUser) {
+                throw new Error('only an authorized user can post a photo')
+            }
+
+            // 2. Save the current user's id with the photo
+            const newPhoto = {
                 ...args.input,
+                userID: currentUser.githubLogin,
                 created: new Date()
             }
-            photos.push(newPhoto)
-            // 3. Return the new photo
+
+            // 3. Insert the new photo, capture the id that the database created
+            const { insertedIds } = await db.collection('photos').insert(newPhoto)
+            newPhoto.id = insertedIds[0]
+
             return newPhoto
+
+        },
+        async githubAuth(parent, { code }, { db }) {
+            // 1. Obtain data from GitHub
+            let {
+                message,
+                access_token,
+                avatar_url,
+                login,
+                name
+            } = await authorizeWithGithub({
+                client_id: '',
+                client_secret: '',
+                code,
+                redirect_uri: 'http://localhost:3000'
+            })
+            // 2. If there is a message, something went wrong
+            if (message) {
+                throw new Error(message)
+            }
+            // 3. Package the results into a single object
+            let latestUserInfo = {
+                name,
+                githubLogin: login,
+                githubToken: access_token,
+                avatar: avatar_url
+            }
+
+            console.log(latestUserInfo)
+            // 4. Add or update the record with the new information
+            const { ops: [user] } = await db
+                .collection('users')
+                .replaceOne({ githubLogin: login }, latestUserInfo, { upsert: true })
+            // 5. Return user data and their token
+            return { user, token: access_token }
+        },
+        addFakeUsers: async (root, { count }, { db }) => {
+
+            var randomUserApi = `https://randomuser.me/api/?results=${count}`
+
+            var { results } = await fetch(randomUserApi)
+                .then(res => res.json())
+
+            var users = results.map(r => ({
+                githubLogin: r.login.username,
+                name: `${r.name.first} ${r.name.last}`,
+                avatar: r.picture.thumbnail,
+                githubToken: r.login.sha1
+            }))
+
+            await db.collection('users').insert(users)
+
+            return users
+        },
+        async fakeUserAuth(parent, { githubLogin }, { db }) {
+
+            var user = await db.collection('users').findOne({ githubLogin })
+
+            if (!user) {
+                throw new Error(`Cannot find user with githubLogin "${githubLogin}"`)
+            }
+
+            return {
+                token: user.githubToken,
+                user
+            }
+
         }
     },
     Photo: {
-        url: parent => `http://yoursite.com/img/${parent.id}.jpg`,
-        postedBy: parent => {
-            return users.find(u => u.githubLogin === parent.githubUser)
-        },
+        id: parent => parent.id || parent._id,
+        url: parent => `/img/photos/${parent._id}.jpg`,
+        postedBy: (parent, args, { db }) =>
+            db.collection('users').findOne({ githubLogin: parent.userID }),
         taggedUsers: parent => tags
             // Returns an array of tags that only contain the current photo
             .filter(tag => tag.photoID === parent.id)
@@ -149,8 +253,47 @@ const resolvers = {
         parseValue: value => new Date(value),
         serialize: value => new Date(value).toISOString(),
         parseLiteral: ast => ast.value
-    })
+    }),
+
 }
+
+const authorizeWithGithub = async credentials => {
+    const { access_token } = await requestGithubToken(credentials)
+    const githubUser = await requestGithubUserAccount(access_token)
+    return { ...githubUser, access_token }
+}
+
+const requestGithubToken = credentials =>
+    fetch(
+        'https://github.com/login/oauth/access_token',
+        {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                Accept: 'application/json'
+            },
+            body: JSON.stringify(credentials)
+        }
+    ).then(res => res.json())
+
+
+async function requestGithubUserAccount(token) {
+    console.log(token)
+    fetch(`https://api.github.com/user`, {
+        headers: {
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+            Authorization: token
+        }
+    })
+        .then(res => res.json())
+        .catch(error => {
+            throw new Error(JSON.stringify(error))
+        })
+
+}
+
+
 
 async function start() {
     // 2. Call `express()` to create an Express application
@@ -161,11 +304,20 @@ async function start() {
         { useNewUrlParser: true }
     )
 
+
     const db = client.db()
 
-    const context = { db }
+    // const context = { db }
 
-    const server = new ApolloServer({ typeDefs, resolvers })
+    const server = new ApolloServer({
+        typeDefs,
+        resolvers,
+        context: async ({ req }) => {
+            const githubToken = req.headers.authorization
+            const currentUser = await db.collection('users').findOne({ githubToken })
+            return { db, currentUser }
+        }
+    })
     server.start().then(res => {
         server.applyMiddleware({ app });
         app.get('/', (req, res) => res.end('Welcome to the PhotoShare API'))
