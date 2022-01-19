@@ -1,5 +1,8 @@
 // 1. Require 'apollo-server'
-const { ApolloServer } = require('apollo-server')
+const { ApolloServer } = require('apollo-server-express')
+const express = require('express')
+const expressPlayground = require('graphql-playground-middleware-express').default
+
 const { GraphQLScalarType } = require('graphql')
 
 const typeDefs = `
@@ -45,20 +48,9 @@ const typeDefs = `
         allPhotos(after: DateTime): [Photo!]!
     }
 
-    type Subscription {
-        newPhoto(category: PhotoCategory): Photo!
-        newUser: User!
-    }
-
     # 3. Return the newly posted photo from the mutation
     type Mutation {
         postPhoto(input: PostPhotoInput!): Photo!
-    }
-
-    schema {
-        query: Query
-        mutation: Mutation
-        subscription: Subscription
     }
 `
 
@@ -158,15 +150,17 @@ const resolvers = {
     })
 }
 
-// 2. Create a new instance of the server.
-// 3. Send it an object with typeDefs (the schema) and resolvers
-const server = new ApolloServer({
-    typeDefs,
-    resolvers
-})
+// 2. Call `express()` to create an Express application
+var app = express()
 
+const server = new ApolloServer({ typeDefs, resolvers })
+server.start().then(res => {
+    server.applyMiddleware({ app });
+    app.get('/', (req, res) => res.end('Welcome to the PhotoShare API'))
+    app.get('/playground', expressPlayground({ endpoint: '/graphql' }))
 
-// 4. Call listen on the server to launch the web server
-server
-    .listen()
-    .then(({ url }) => console.log(`GraphQL Service running on ${url}`))
+    // 5. Listen on a specific port
+    app.listen({ port: 4000 }, () =>
+        console.log(`GraphQL Server running @ http://localhost:4000${server.graphqlPath}`)
+    )
+});
